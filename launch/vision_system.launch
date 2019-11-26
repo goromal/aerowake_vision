@@ -1,0 +1,7 @@
+<launch>
+
+<node name="vision_system" pkg="aerowake_vision" type="vision_system.py" output="screen">
+  <param name="show_pose_img" value="true"/>
+</node>
+
+</launch>
