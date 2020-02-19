@@ -1,72 +1,101 @@
 #!/usr/bin/python
 
-import rospy, imutils, sys
+import rospy, os
 import numpy as np
-from math import pi
-from sensor_msgs.msg import CameraInfo
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Twist
+from datetime import datetime
+import tf.transformations as TR
 
-from helper_functions import CentroidFinder, NoiseFilter, PnPSolver
-from helper_functions import convert_image, rectify, show_image
+from helper_functions import convert_image, VisionPose
+
+def homogeneous_matrix(trans, quat):
+    return TR.concatenate_matrices(TR.translation_matrix(trans), TR.quaternion_matrix(quat))
 
 class VisionSystem:
 
     def __init__(self):
-        self.binary_threshold = 100 # 100
-        self.flag_show_images = rospy.get_param('show_pose_img', False)
-        self.flag_show_debug_images = False
-        self.flag_show_debug_messages = False
+        self.binary_threshold = 100
+        self.id = 0
         self.rotate = False
+        self.trans_prev = None
+        self.debug = rospy.get_param('~debug', 0) # 0 for no debug, 1 for window pop-up, 2 for debug msgs, 3 for image logging
+        self.logdir = rospy.get_param('~log_dir', '/home/andrew/.ros/vision_sys_' + str(datetime.now()).replace(" ", "_").replace(":","-").replace(".","_"))
 
-        self.cfinder = CentroidFinder(self.flag_show_debug_images,self.flag_show_debug_messages,self.binary_threshold)
-        self.nfilter = NoiseFilter(self.flag_show_debug_images,self.flag_show_debug_messages,self.rotate)
-        self.psolver = None
+        T_u_c_coeff = rospy.get_param('~T_UAV_CAM')
+        q_u_c = TR.quaternion_from_euler(T_u_c_coeff[3], T_u_c_coeff[4], T_u_c_coeff[5])
+        # instead of interpreting as active transform from UAV to camera, interpreting as
+        # passive transform from camera to UAV
+        H_CAM_UAV = homogeneous_matrix(T_u_c_coeff[0:3], q_u_c)
+        self.H_UAV_CAM = np.linalg.inv(H_CAM_UAV)
+
+        X_s_b_coeff = rospy.get_param('~X_ship_beacon')
+        q_s_b = TR.quaternion_from_euler(X_s_b_coeff[3], X_s_b_coeff[4], X_s_b_coeff[5])
+        # instead of interpreting as active transform from ship to beacon, interpreting as
+        # passive transform from beacon to ship
+        H_BEAC_SHIP = homogeneous_matrix(X_s_b_coeff[0:3], q_s_b)
+        objp_coeff_orig = rospy.get_param('~beacon_positions')
+        self.objp_coeff = list()
+        for i in range(0, 8):
+            obj_list = objp_coeff_orig[3*i:3*i+3]
+            obj_list.append(1.0)
+            obj_point_BEAC = np.array(obj_list)
+            obj_point_SHIP = np.dot(H_BEAC_SHIP, obj_point_BEAC)
+            self.objp_coeff.append(obj_point_SHIP[0])
+            self.objp_coeff.append(obj_point_SHIP[1])
+            self.objp_coeff.append(obj_point_SHIP[2])
 
         self.transform_pub = rospy.Publisher("vision_pose", TransformStamped, queue_size=1)
-        self.camera_info_sub = rospy.Subscriber("/camera/camera_info", CameraInfo, self.cameraInfoCallback)
-        self.image_sub = rospy.Subscriber("/camera/image_raw", Image, self.imageCallback)
+        self.image_sub = rospy.Subscriber("camera/image_raw", Image, self.imageCallback, queue_size=1)
+        self.vecs_sub = rospy.Subscriber("rodrigues_guess", Twist, self.rodriguesCallback, queue_size=1)
 
-    def cameraInfoCallback(self, msg):
-        mtx = np.array([msg.K[0:3],msg.K[3:6],msg.K[6:9]])
-        dist = np.array(msg.D)
-        self.psolver = PnPSolver(mtx, dist,self.flag_show_debug_images,self.flag_show_debug_messages,self.rotate)
-        self.camera_info_sub.unregister()
+        self.rvecs = None
+        self.tvecs = None
+
+        K = rospy.get_param('~camera_matrix/data')
+        D = rospy.get_param('~distortion_coefficients/data')
+        mtx = np.array([K[0:3], K[3:6], K[6:9]])
+        dist = np.array(D)
+        if self.debug > 2:
+            os.mkdir(self.logdir)
+
+        self.VP = VisionPose(mtx, dist, self.objp_coeff, self.debug, self.binary_threshold, self.rotate, self.logdir)
 
     def imageCallback(self, msg):
-        if not self.psolver is None:
-            img = convert_image(msg, flag=self.flag_show_debug_images)
-            show_image("Original Image", img, flag=self.flag_show_debug_images)
+        img = convert_image(msg, self.debug, self.id, self.logdir)
+        pos, quat = self.VP.imgToPose(img, self.id, self.rvecs, self.tvecs)
+        if not pos is None:
+            self.publishTransform(msg.header.stamp, pos, quat)
+        self.id += 1
 
-            centroids, img_cent = self.cfinder.get_centroids(img)
-            # show_image("Initial Centroids", img_cent, flag=self.flag_show_images)
+    def rodriguesCallback(self, msg):
+        self.tvecs = np.array([msg.linear.x, msg.linear.y, msg.linear.z])
+        self.rvecs = np.array([msg.angular.x, msg.angular.y, msg.angular.z])
 
-            centroids, img_filt = self.nfilter.filter_noise(img, centroids)
-            show_image("Filtered Centroids", img_filt, flag=self.flag_show_debug_images)
+    def publishTransform(self, stamp, pos, quat):
+        H_SHIP_CAM = homogeneous_matrix(list(pos), quat)
+        H_CAM_SHIP = np.linalg.inv(H_SHIP_CAM)
+        H_UAV_SHIP = np.dot(H_CAM_SHIP, self.H_UAV_CAM)
+        trans = TR.translation_from_matrix(H_UAV_SHIP)
+        quatn = TR.quaternion_from_matrix(H_UAV_SHIP)
 
-            position, yawpitchroll, orientation, img_solv = self.psolver.solve_pnp(img, centroids)
-            show_image("Feature Pose Extraction", img_solv, duration=1, flag=self.flag_show_images)
-
-            if not position[0] is None:
-                self.publishTransform(msg.header.stamp, position, yawpitchroll)
-
-    def publishTransform(self, stamp, pos, ypr):
         T = TransformStamped()
         T.header.stamp = stamp
-
-        # TODO: FIX SCALE
-        T.transform.translation.x = pos[0]
-        T.transform.translation.y = pos[1]
-        T.transform.translation.z = pos[2]
-        # TODO: FIX ROTATION
-        T.transform.rotation.w = 0.0
-        T.transform.rotation.x = pi * ypr[2] / 180.0
-        T.transform.rotation.y = pi * ypr[1] / 180.0
-        T.transform.rotation.z = pi * ypr[0] / 180.0
-
+        T.transform.translation.x = trans[0]
+        T.transform.translation.y = trans[1]
+        T.transform.translation.z = trans[2]
+        T.transform.rotation.x = quatn[0]
+        T.transform.rotation.y = quatn[1]
+        T.transform.rotation.z = quatn[2]
+        T.transform.rotation.w = quatn[3]
         self.transform_pub.publish(T)
 
-def main(args):
+        if not self.trans_prev is None:
+            if np.linalg.norm(trans - self.trans_prev) > 5.0 and self.debug > 1:
+                rospy.logwarn('Whoa, experienced a large estimate jump at iteration %d!' % self.id)
+        self.trans_prev = trans
+
+def main():
     rospy.init_node("vision_system", anonymous=True)
     vs = VisionSystem()
     try:
@@ -75,4 +104,4 @@ def main(args):
         print("Shutting down vision system node")
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()

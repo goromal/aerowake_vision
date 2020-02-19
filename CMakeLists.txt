@@ -151,6 +151,12 @@ add_executable(camera_sim_node
 add_dependencies(camera_sim_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(camera_sim_node aerowake-utils-lib ${OpenCV_LIBS} ${catkin_LIBRARIES})
 
+add_executable(vision_system_bridge
+  src/vision_system_bridge.cpp
+)
+add_dependencies(vision_system_bridge ${catkin_EXPORTED_TARGETS})
+target_link_libraries(vision_system_bridge aerowake-utils-lib ${OpenCV_LIBS} ${catkin_LIBRARIES})
+
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use

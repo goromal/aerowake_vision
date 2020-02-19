@@ -10,6 +10,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
 #include <opencv2/opencv.hpp>
 
 #define NUM_BEACONS     8
@@ -33,6 +34,8 @@ private:
     visualization_msgs::Marker marker_;
     ros::Publisher marker_pub_;
     ros::Publisher image_pub_;
+    ros::Publisher caminfo_pub_;
+    sensor_msgs::CameraInfo caminfo_;
 
     std::vector<Vector3d> points_BOAT_;
     geometry_msgs::TransformStamped tf_BOAT_UAV_;

@@ -7,7 +7,7 @@ namespace camera_sim {
 CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(), tfListener_(tfBuffer_)
 {
     marker_pub_ = nh_.advertise<visualization_msgs::Marker>("beacon_array_marker", 1);
-    marker_.header.frame_id    = "boat";
+    marker_.header.frame_id    = "boatNED";
     marker_.type               = visualization_msgs::Marker::POINTS;
     marker_.action             = visualization_msgs::Marker::ADD;
     marker_.pose.orientation.x = 0.0;
@@ -22,7 +22,13 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     marker_.scale.x            = 0.125;
     marker_.scale.y            = 0.125;
 
-    image_pub_ = nh_.advertise<sensor_msgs::Image>("simulated_camera_image", 1);
+    image_pub_ = nh_.advertise<sensor_msgs::Image>("camera/image_raw", 1);
+    caminfo_pub_ = nh_.advertise<sensor_msgs::CameraInfo>("camera/camera_info", 1);
+
+    std::vector<double> vec_X_ship_beacon = std::vector<double>(6);
+    ROS_ASSERT(nh_private_.getParam("X_ship_beacon", vec_X_ship_beacon));
+    Xformd X_ship_beacon = Xformd(Vector3d(vec_X_ship_beacon[0], vec_X_ship_beacon[1], vec_X_ship_beacon[2]),
+                                  Quatd::from_euler(vec_X_ship_beacon[3], vec_X_ship_beacon[4], vec_X_ship_beacon[5]));
 
     std::vector<double> points_BOAT = std::vector<double>(3 * NUM_BEACONS);
     ROS_ASSERT(nh_private_.getParam("beacon_positions", points_BOAT));
@@ -31,11 +37,12 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
         double point_BOAT_x = points_BOAT[TO_ULONG(3 * i + 0)];
         double point_BOAT_y = points_BOAT[TO_ULONG(3 * i + 1)];
         double point_BOAT_Z = points_BOAT[TO_ULONG(3 * i + 2)];
-        points_BOAT_.push_back(Vector3d(point_BOAT_x, point_BOAT_y, point_BOAT_Z));
+        Vector3d point_BOAT = X_ship_beacon.transforma(Vector3d(point_BOAT_x, point_BOAT_y, point_BOAT_Z));
+        points_BOAT_.push_back(point_BOAT);
         geometry_msgs::Point p;
-        p.x = point_BOAT_x;
-        p.y = point_BOAT_y;
-        p.z = point_BOAT_Z;
+        p.x = point_BOAT.x();
+        p.y = point_BOAT.y();
+        p.z = point_BOAT.z();
         marker_.points.push_back(p);
     }
 
@@ -54,10 +61,9 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     Vector2d img_size(img_w_, img_h_);
     std::vector<double> opencv_camera_matrix_coeff = std::vector<double>(9);
     ROS_ASSERT(nh_private_.getParam("camera_matrix/data", opencv_camera_matrix_coeff));
+    // https://docs.opencv.org/2.4/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html
     Vector2d cam_f(opencv_camera_matrix_coeff[0], opencv_camera_matrix_coeff[4]),
              cam_c(opencv_camera_matrix_coeff[2], opencv_camera_matrix_coeff[5]);
-    // Distortionless camera model
-    camera_ = Camera(cam_f, cam_c, Matrix<double, 5, 1>::Zero(), img_size);
 
     ROS_ASSERT(nh_private_.getParam("camera/pointgrey_camera/frame_rate", cameraRate_));
     ROS_ASSERT(cameraRate_ >= 1.0);
@@ -67,6 +73,27 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     ROS_ASSERT(nh_private_.getParam("pixel_stdev", pix_stdev_));
     gaussian_dist_ = std::normal_distribution<double>(0.0, 1.0);
 
+    caminfo_.height = static_cast<unsigned int>(img_h_);
+    caminfo_.width = static_cast<unsigned int>(img_w_);
+    ROS_ASSERT(nh_private_.getParam("distortion_model", caminfo_.distortion_model));
+    std::vector<double> opencv_dist_matrix_coeff = std::vector<double>(5);
+    ROS_ASSERT(nh_private_.getParam("distortion_coefficients/data", opencv_dist_matrix_coeff));
+    ROS_ASSERT(nh_private_.getParam("distortion_coefficients/data", caminfo_.D));
+
+    for (unsigned int i = 0; i < 9; i++)
+        caminfo_.K[i] = opencv_camera_matrix_coeff[i];
+    std::vector<double> opencv_proj_matrix_coeff = std::vector<double>(12);
+    ROS_ASSERT(nh_private_.getParam("projection_matrix/data", opencv_proj_matrix_coeff));
+    for (unsigned int i = 0; i < 12; i++)
+        caminfo_.P[i] = opencv_proj_matrix_coeff[i];
+
+    // Full camera model from projection matrix
+    Vector2d             f(opencv_proj_matrix_coeff[0], opencv_proj_matrix_coeff[5]);
+    Vector2d             c(opencv_proj_matrix_coeff[2], opencv_proj_matrix_coeff[6]);
+    Matrix<double, 5, 1> d(opencv_dist_matrix_coeff.data());
+    camera_ = Camera(f, c, d, img_size);
+
+    // Update timer
     timer_ = nh_.createTimer(ros::Duration(ros::Rate(updateRate_)), &CameraSim::onUpdate, this);
 }
 
@@ -91,7 +118,7 @@ void CameraSim::takePicture()
     // Get transform from BOAT frame to UAV frame
     try
     {
-        tf_BOAT_UAV_ = tfBuffer_.lookupTransform("boat", "UAV", ros::Time(0));
+        tf_BOAT_UAV_ = tfBuffer_.lookupTransform("boatNED", "UAV", ros::Time(0));
         q_BOAT_UAV_ = Quatd(Vector4d(tf_BOAT_UAV_.transform.rotation.w,
                                      tf_BOAT_UAV_.transform.rotation.x,
                                      tf_BOAT_UAV_.transform.rotation.y,
@@ -149,6 +176,8 @@ void CameraSim::takePicture()
     msg.encoding = sensor_msgs::image_encodings::RGB8;
     msg.image = image;
     image_pub_.publish(msg);
+    caminfo_.header = msg.header;
+    caminfo_pub_.publish(caminfo_);
 }
 
 } // end namespace camera_sim

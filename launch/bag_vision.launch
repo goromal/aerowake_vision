@@ -1,0 +1,61 @@
+<launch>
+
+  <!-- ============= OBC PARAMETERS FOR MILESTONE 4 ============== -->
+
+  <arg name="record"        default="false"/>
+  <arg name="mav_name"      default="aerowake_1"/>
+  <arg name="bagfile"       default="$(find aerowake_sim)/bags/vision_bags/HW_RAW1.bag"/>
+  <arg name="vis_param"     default="mit-green-small"/>
+  <arg name="camcal_param"  default="calib-small-1"/>
+  <arg name="frame_param"   default="mit-uav-frame"/>
+  <arg name="ekf_param"     default="mit-uav-mocap"/>
+
+  <!-- =========================================================== -->
+
+  <param name="use_sim_time" value="true"/>
+  <arg unless="$(arg record)" name="debug" default="1"/>
+  <arg     if="$(arg record)" name="debug" default="2"/>
+
+  <!-- ROSbag play -->
+  <node name="player" pkg="rosbag" type="play" output="screen"
+        args="--quiet --clock $(arg bagfile)"/>
+
+  <!-- Parameter Files -->
+  <arg name="vis_paramfile"     default="$(find aerowake_params)/params/vision/$(arg vis_param).yaml"/>
+  <arg name="camcal_paramfile"  default="$(find aerowake_params)/params/camera/$(arg camcal_param).yaml"/>
+  <arg name="frame_paramfile"   default="$(find aerowake_params)/params/frame/$(arg frame_param).yaml"/>
+  <arg name="ekf_paramfile"     default="$(find aerowake_params)/params/ekf/$(arg ekf_param).yaml"/>
+
+  <!-- VICON sensor -->
+  <node name="vicon_sensor" pkg="aerowake_utils" type="vicon_sensor.py" output="screen">
+    <remap from="vicon" to="$(arg mav_name)/vicon/filtered"/>
+  </node>
+
+  <!-- (Relative) Estimator -->
+  <node name="estimator" pkg="roscopter" type="ekf_node" output="screen">
+    <rosparam command="load" file="$(arg ekf_paramfile)"/>
+    <remap from="imu" to="imu/data"/>
+    <remap from="odom" to="rel_odometry"/>
+  </node>
+
+  <!-- Vision Bridge -->
+  <node name="vision_bridge" pkg="aerowake_vision" type="vision_system_bridge" output="screen">
+    <rosparam command="load" file="$(arg frame_paramfile)"/>
+  </node>
+
+  <!-- Vision System -->
+  <node name="vision_system" pkg="aerowake_vision" type="vision_system.py" output="screen">
+    <param name="debug" value="$(arg debug)"/>
+    <!-- <param name="debug" value="1"/> -->
+    <rosparam command="load" file="$(arg camcal_paramfile)"/>
+    <rosparam command="load" file="$(arg vis_paramfile)"/>
+    <rosparam command="load" file="$(arg frame_paramfile)"/>
+  </node>
+
+  <!-- ROSbag recorder -->
+  <group if="$(arg record)">
+    <node name="recorder" pkg="rosbag" type="record" output="screen"
+          args="-o $(find aerowake_sim)/bags/vision_bags/vis_hw.bag /vision_pose /rel_odometry"/>
+  </group>
+
+</launch>

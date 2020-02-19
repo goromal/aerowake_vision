@@ -25,7 +25,7 @@ class text_colors:
   UNDERLINE = '\033[4m'
 
 # Image Processing Functions
-def convert_image(msg, flag = False):
+def convert_image(msg, flag, id, logdir):
   '''
   Converts ROS image to OpenCV image, then blocks out errant pixels and rectifies.
   '''
@@ -53,11 +53,12 @@ def convert_image(msg, flag = False):
 
   # Black out a rectangle in the top left of the image since there are often erroneous pixels there (image conversion error perhaps?)
   cv2.rectangle(img, (0,0), (30,1), 0, cv2.FILLED) # cv2.cv.CV_FILLED)
-  show_image('blacked out', img, flag)
+  if flag > 2:
+    cv2.imwrite(logdir + '/' + str(id) + '_[convert](original).png', img)
 
   return img
 
-def show_image(title, img, flag = True, duration = 1):
+def show_image(title, img, duration = 1):
   '''
   Uses cv2.imshow() to display an image to the screen.
 
@@ -65,16 +66,15 @@ def show_image(title, img, flag = True, duration = 1):
     flag  If flag is false, image will not be shown. Useful when there are multiple show_image calls throughout a script that are flagged with a single boolean.
     duration  Number of ms to display the image. A value of 0 displays the image until a key is pressed.
   '''
-  if flag:
-    cv2.imshow(title,img)
-    cv2.waitKey(duration)
+  cv2.imshow(title, img)
+  cv2.waitKey(duration)
 
-def draw_axes(img, corners, imgpts):
+def draw_axes(img, imgpts):
     img_deep_copy = np.array(img)
-    corner = tuple(corners[0].ravel())
-    cv2.line(img_deep_copy,corner,tuple(imgpts[2].ravel()),255,3)
-    cv2.line(img_deep_copy,corner,tuple(imgpts[1].ravel()),170,3)
-    cv2.line(img_deep_copy,corner,tuple(imgpts[0].ravel()),85,3)
+    # corner = tuple(corners[0].ravel())
+    cv2.line(img_deep_copy,tuple(imgpts[0].ravel()),tuple(imgpts[3].ravel()),255,3) # z-axis (brightest)
+    cv2.line(img_deep_copy,tuple(imgpts[0].ravel()),tuple(imgpts[2].ravel()),170,3) # y-axis (second brightest)
+    cv2.line(img_deep_copy,tuple(imgpts[0].ravel()),tuple(imgpts[1].ravel()),85,3)  # z-axis (darkest)
     return img_deep_copy
 
 def rectify(img, mtx, dist):
@@ -84,13 +84,14 @@ def rectify(img, mtx, dist):
   return cv2.undistort(img,mtx,dist,None,mtx_new)
 
 class CentroidFinder(object):
-  def __init__(self, show_images, flag_debug, binary_threshold):
+  def __init__(self, flag_debug, binary_threshold, logdir):
+    self._id = 0
     self._img = None
-    self._show_images = show_images
     self._debug = flag_debug
     self._binary_threshold = binary_threshold
+    self._logdir = logdir
 
-  def get_centroids(self, img):
+  def get_centroids(self, img, id):
     '''
     Returns a tuple of tuples containing all centroids found in the image. Return tuple can be arbitrary length.
 
@@ -104,6 +105,7 @@ class CentroidFinder(object):
     '''
 
     # Set image
+    self._id = id
     self._img = np.array(img)
 
     # Find centroids and reshape for ROS publishing
@@ -114,7 +116,7 @@ class CentroidFinder(object):
       cv2.circle(self._img, center, 3, 255, 3)
 
     # Return centroids and image with centroids highlighted
-    return centroids, self._img
+    return centroids #, self._img
 
   def _obtain_initial_centroids(self):
     '''
@@ -130,28 +132,25 @@ class CentroidFinder(object):
     threshold_value = self._binary_threshold
     _,self._img = cv2.threshold(self._img,threshold_value,max_value,cv2.THRESH_BINARY)
 
-    if self._show_images:
-      cv2.imshow('binary',self._img)
-      cv2.waitKey(1)
+    if self._debug > 2:
+      cv2.imwrite(self._logdir + '/' + str(self._id) + '_[centroid](binary).png', self._img)
 
     # Morph image to 'close' the shapes that are found
     kernel = np.ones((2,2),np.uint8)
     self._img = cv2.dilate(self._img,kernel,iterations = 1)
     self._img = cv2.erode(self._img,kernel,iterations = 1)
 
-    if self._show_images:
-      cv2.imshow('morph',self._img)
-      cv2.waitKey(1)
+    # if self._debug > 2:
+    #   cv2.imwrite(self._logdir + '/' + str(self._id) + '_[centroid](morph).png', self._img)
 
     # Find contours
     # contours, _ = cv2.findContours(self._img,cv2.RETR_TREE,cv2.CHAIN_APPROX_NONE)
     _, contours, _ = cv2.findContours(self._img,cv2.RETR_TREE,cv2.CHAIN_APPROX_NONE)
 
-    if self._show_images:
-      img_temp = np.array(self._img)
-      cv2.drawContours(img_temp, contours, -1, (255,255,255), 3)
-      cv2.imshow('contours',img_temp)
-      cv2.waitKey(1)
+    # if self._debug > 2:
+    #   img_temp = np.array(self._img)
+    #   cv2.drawContours(img_temp, contours, -1, (255,255,255), 3)
+    #   cv2.imwrite(self._logdir + '/' + str(self._id) + '_[centroid](contours).png', img_temp)
 
     # Extract centroids
     centroids = []
@@ -178,13 +177,14 @@ class CentroidFinder(object):
     return tuple(centroids)
 
 class NoiseFilter(object):
-  def __init__(self, show_images, flag_debug, rotate):
-    self._show_images = show_images
+  def __init__(self, flag_debug, rotate, logdir):
     self._img = None
+    self._id = 0
+    self._logdir = logdir
     self._debug = flag_debug
     self._rotate = rotate
 
-  def filter_noise(self, img, centroids):
+  def filter_noise(self, img, centroids, id):
     '''
     This function takes in a tuple of tuples containing centroids. It filters these centroids for noise and returns the result. The feature is expected to have eight points arranged in two parallel rows of four equally spaced points.
 
@@ -193,22 +193,37 @@ class NoiseFilter(object):
       centroids   A tuple of arbitrary length where each element is a tuple of length two
     '''
     self._img = np.array(img)
+    self._id = id
 
     if len(centroids) < 8:
-      if self._debug:
+      if self._debug > 1:
         print text_colors.FAIL + "Failure: Too few centroids after initial selection." + text_colors.ENDCOLOR
       return (), self._img
+
+    if self._debug > 2:
+      img_temp = np.array(self._img)
+      for c in centroids:
+        center = (int(c[0]),int(c[1]))
+        cv2.circle(img_temp, center, 3, 255, 3)
+      cv2.imwrite(self._logdir + '/' + str(self._id) + '_[filter](0 no filter).png', img_temp)
 
     # We expect 8 feature points. Filter to remove any extras.
     if len(centroids) > 8:
 
-      if self._debug:
+      if self._debug > 1:
         print text_colors.OKBLUE + "Note: Zeroeth filter applied." + text_colors.ENDCOLOR
       centroids = self._zeroeth_round_centroid_filter(centroids)
 
-      if self._debug:
-        print text_colors.OKBLUE + "Note: First filter applied." + text_colors.ENDCOLOR
-      centroids = self._first_round_centroid_filter(centroids)
+      if self._debug > 2:
+        img_temp = np.array(self._img)
+        for c in centroids:
+          center = (int(c[0]),int(c[1]))
+          cv2.circle(img_temp, center, 3, 255, 3)
+        cv2.imwrite(self._logdir + '/' + str(self._id) + '_[filter](1 filter).png', img_temp)
+
+      # if self._debug > 1: ++++
+      #   print text_colors.OKBLUE + "Note: First filter applied." + text_colors.ENDCOLOR ++++
+      # centroids = self._first_round_centroid_filter(centroids) ++++
 
       # TODO: rewrite 2nd round filter to be camera orientation independent (i.e. if camera is mounted at 90 degrees, make 2nd round filter work still)
       # if len(centroids) > 8:
@@ -218,15 +233,20 @@ class NoiseFilter(object):
 
     # The filters may have wiped out too many points. Check if that's the case.
     if len(centroids) < 8:
-      if self._debug:
+      if self._debug > 1:
         print text_colors.FAIL + "Failure: Too few centroids after filtering." + text_colors.ENDCOLOR
+      return (), self._img
+
+    if len(centroids) > 8:
+      if self._debug > 1:
+        print text_colors.FAIL + "Failure: Too many centroids after filtering." + text_colors.ENDCOLOR
       return (), self._img
 
     for c in centroids:
       center = (int(c[0]),int(c[1]))
       cv2.circle(self._img, center, 3, 255, 3)
 
-    return centroids, self._img
+    return centroids # , self._img
 
   def _dist(self, coords1,coords2):
     '''
@@ -265,7 +285,7 @@ class NoiseFilter(object):
     '''
     Takes subsets of four and returns all centroids that have low residuals after a linear fit.
     '''
-
+    import pdb
     orig_centroids = centroids
 
     # Find rows based upon linear fit residuals
@@ -278,16 +298,42 @@ class NoiseFilter(object):
         _, residuals, _, _, _ = np.polyfit(y, x, 1, full = True)
       else:
         _, residuals, _, _, _ = np.polyfit(x, y, 1, full = True)
+
+      # select low-residual sets where the points are ALSO relatively evenly spaced
+
       if residuals < 4:
-        rows.append(list(s))
+
+        point_combos = combinations(s, 2)
+        distances = []
+        for point_combo in point_combos:
+          x1 = point_combo[0][0]
+          x2 = point_combo[1][0]
+          y1 = point_combo[0][1]
+          y2 = point_combo[1][1]
+          distances.append(math.sqrt((x1-x2)**2+(y1-y2)**2))
+        # if self._id == 397 or self._id == 416 or self._id == 417:
+        #   pdb.set_trace()
+        sorted_distances = np.array(sorted(distances))
+        three_shortest_distances = sorted_distances[0:3]
+        mean_shortest = np.mean(three_shortest_distances)
+        if mean_shortest > 10:
+            dist_limit = 5
+            qualified = True
+            for short in three_shortest_distances:
+              if abs(short - mean_shortest) > dist_limit:
+                qualified = False
+
+            if qualified:
+              rows.append(list(s))
 
     # Get all centroids that exist in a low-residual subset
     set_of_centroids = set([r[i] for r in rows for i in range(0,len(r))])
     centroids = list(set_of_centroids)
 
     # If zeroeth filter fails, return the original list
-    if len(centroids) < 8:
-      return orig_centroids
+    # if len(centroids) < 8:
+    #   # pdb.set_trace()
+    #   return orig_centroids
 
     return centroids
 
@@ -337,11 +383,11 @@ class NoiseFilter(object):
       if len(y) >= 8:
         y_cluster_of_interest.append(y)
 
-    if len(x_cluster_of_interest) > 1:
+    if len(x_cluster_of_interest) > 1 and self._debug > 1:
       print text_colors.WARNING + 'Warning: Too many x clusters of interest.' + text_colors.ENDCOLOR
       return []
 
-    if len(y_cluster_of_interest) > 1:
+    if len(y_cluster_of_interest) > 1 and self._debug > 1:
       print text_colors.WARNING + 'Warning: Too many y clusters of interest.' + text_colors.ENDCOLOR
       return []
 
@@ -457,7 +503,7 @@ class NoiseFilter(object):
         slopes_of_interest = c
 
     # Report an error if we do not detect a slope cluster with at least 12 points
-    if slopes_of_interest is None:
+    if slopes_of_interest is None and self._debug > 1:
       print text_colors.WARNING + 'Warning: Invalid slope clusters.' + text_colors.ENDCOLOR
       return []
 
@@ -477,8 +523,9 @@ class NoiseFilter(object):
     return tuple(points)
 
 class PnPSolver(object):
-  def __init__(self, mtx, dist, show_images, flag_debug, rotate):
-    self._show_images = show_images
+  def __init__(self, mtx, dist, flag_debug, rotate, objp_coeff, logdir):
+    self._id = 0
+    self._logdir = logdir
     self._debug = flag_debug
     self._mtx = mtx
     self._dist = dist
@@ -487,27 +534,37 @@ class PnPSolver(object):
     self._rvecs = None
     self._tvecs = None
     self._rotate = rotate
+    self._objp = np.zeros((8,1,3), np.float32)
+    for i in range(0, 8):
+        self._objp[i] = [objp_coeff[3*i+0], objp_coeff[3*i+1], objp_coeff[3*i+2]]
 
-  def solve_pnp(self, img, centroids):
+  def solve_pnp(self, img, centroids, id, rvecs, tvecs):
     '''
     Corresponds each image point in centroids to a known real-world coordinate, then solves the Perspective-n-Point problem for that assignment.
     '''
 
+    if self._rvecs is None and not rvecs is None:
+      self._rvecs = rvecs
+      self._tvecs = tvecs
+      print text_colors.WARNING + 'Warning: Using manufactured initial guess for rvec, tvec' + text_colors.ENDCOLOR
+
     # Set image
+    self._id = id
     self._img = np.array(img)
 
     # Assign points
     assigned_rows = self._assign_points(centroids)
     total_points_assigned = len(assigned_rows[0]) + len(assigned_rows[1])
     if not total_points_assigned == 8:
-      if self._debug:
+      if self._debug > 1:
         print text_colors.FAIL + "Failure: Failure to assign points correctly." + text_colors.ENDCOLOR
       return (None,None,None), (None,None,None), (None,None,None), self._img
 
     # Extract pose
-    position, yawpitchroll, orientation = self._pose_extraction(assigned_rows)
+    # position, yawpitchroll, orientation = self._pose_extraction(assigned_rows)
+    position, quat = self._pose_extraction(assigned_rows)
 
-    return position, yawpitchroll, orientation, self._img
+    return position, quat #, self._img
 
   def _assign_points(self, centroids):
     '''
@@ -595,25 +652,25 @@ class PnPSolver(object):
     top_row = centroids[1]
 
     # Calculate pose. First, define object points. The units used here, [cm], will determine the units of the output. These are the relative positions of the beacons in NED GCS-frame coordinates (aft, port, down).
-    objp = np.zeros((8,1,3), np.float32)
+    # objp = np.zeros((8,1,3), np.float32)
 
     # # VICON FEATURE
-    if self._print_feature_name:
-      print text_colors.OKGREEN + "Using vicon feature" + text_colors.ENDCOLOR
-      self._print_feature_name = False
-    row_aft = [0,-0.802] # [m]
-    row_port = [[0.0, -0.161, -0.318, -0.476],[0.0, -0.159, -0.318, -0.472]] # [m]
-    row_down = [0,-0.256] # [m]
-    # Lower row of beacons
-    objp[0] = [ row_aft[0], row_port[0][0], row_down[0]]
-    objp[1] = [ row_aft[0], row_port[0][1], row_down[0]]
-    objp[2] = [ row_aft[0], row_port[0][2], row_down[0]]
-    objp[3] = [ row_aft[0], row_port[0][3], row_down[0]]
-    # Upper row of beacons
-    objp[4] = [ row_aft[1], row_port[1][0], row_down[1]]
-    objp[5] = [ row_aft[1], row_port[1][1], row_down[1]]
-    objp[6] = [ row_aft[1], row_port[1][2], row_down[1]]
-    objp[7] = [ row_aft[1], row_port[1][3], row_down[1]]
+    # if self._print_feature_name:
+    #   print text_colors.OKGREEN + "Using vicon feature" + text_colors.ENDCOLOR
+    #   self._print_feature_name = False
+    # row_aft = [0,-0.802] # [m]
+    # row_port = [[0.0, -0.161, -0.318, -0.476],[0.0, -0.159, -0.318, -0.472]] # [m]
+    # row_down = [0,-0.256] # [m]
+    # # Lower row of beacons
+    # objp[0] = [ row_aft[0], row_port[0][0], row_down[0]]
+    # objp[1] = [ row_aft[0], row_port[0][1], row_down[0]]
+    # objp[2] = [ row_aft[0], row_port[0][2], row_down[0]]
+    # objp[3] = [ row_aft[0], row_port[0][3], row_down[0]]
+    # # Upper row of beacons
+    # objp[4] = [ row_aft[1], row_port[1][0], row_down[1]]
+    # objp[5] = [ row_aft[1], row_port[1][1], row_down[1]]
+    # objp[6] = [ row_aft[1], row_port[1][2], row_down[1]]
+    # objp[7] = [ row_aft[1], row_port[1][3], row_down[1]]
 
     # # ORIENTATION TEST VICON FEATURE
     # if self._print_feature_name:
@@ -673,46 +730,100 @@ class PnPSolver(object):
     if self._rvecs is None:
       use_prev_solution = False
     # flag_success,rvecs,tvecs = cv2.solvePnP(objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.CV_ITERATIVE)
-    flag_success,rvecs,tvecs = cv2.solvePnP(objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.SOLVEPNP_ITERATIVE)
+    flag_success,rvecs,tvecs = cv2.solvePnP(self._objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.SOLVEPNP_ITERATIVE)
 
     if flag_success:
       self._rvecs = rvecs
       self._tvecs = tvecs
+      # print "[HF] t:", tvecs.T
+      # print "[HF] r:", rvecs.T
 
-      # Calculate pose
-      Pc = tuple(feature_points[0].ravel())
-      Pc = np.array([[Pc[0]], [Pc[1]], [1]])
-      Kinv = np.matrix(np.linalg.inv(self._mtx))
-      R,_ = cv2.Rodrigues(self._rvecs)
-      Rinv = np.matrix(np.linalg.inv(R))
-      T = np.array(self._tvecs)
+      # # Calculate pose
+      # Pc = tuple(feature_points[0].ravel())
+      # Pc = np.array([[Pc[0]], [Pc[1]], [1]])
+      # Kinv = np.matrix(np.linalg.inv(self._mtx))
+      # R,_ = cv2.Rodrigues(self._rvecs)
+      # Rinv = np.matrix(np.linalg.inv(R))
+      # T = np.array(self._tvecs)
+      #
+      # # Calculate relative position
+      # position = Rinv*(Kinv*Pc-T)
+      # position = [float(val) for val in position]
+      #
+      # # Get relative orientation as yaw, pitch, roll with respect to feature
+      # orientation = self._orientation_decomposition(R)
+      # yawpitchroll = self._zyx2ypr(orientation)
+      position, quat = self._rel_pose_from_rodrigues()
 
-      # Calculate relative position
-      position = Rinv*(Kinv*Pc-T)
-      position = [float(val) for val in position]
+      # # Draw axes on image
+      # axis_len = 0.25 # [m] # <<<<
+      # axis = np.float32([[0,0,0], [axis_len,0,0], [0,axis_len,0], [0,0,axis_len]]).reshape(-1,3)
+      # imgpts,_ = cv2.projectPoints(axis,rvecs,tvecs,self._mtx,self._dist)
+      # # origin,_ = cv2.projectPoints()
+      # # if self._debug > 2:
+      # #   cv2.imwrite(self._logdir + '/' + str(self._id) + '_[pnp](axesless).png', self._img)
+      # # self._img = draw_axes(self._img,feature_points,imgpts)
+      # self._img = draw_axes(self._img, imgpts)
+      # if self._debug > 2:
+      #   cv2.imwrite(self._logdir + '/' + str(self._id) + '_[pnp](axes).png', self._img)
 
-      # Get relative orientation as yaw, pitch, roll with respect to feature
-      orientation = self._orientation_decomposition(R)
-      yawpitchroll = self._zyx2ypr(orientation)
-
-      # Draw axes on image
-      axis_len = 0.6 # [m]
-      axis = np.float32([[axis_len,0,0], [0,axis_len,0], [0,0,axis_len]]).reshape(-1,3)
-      imgpts,_ = cv2.projectPoints(axis,rvecs,tvecs,self._mtx,self._dist)
-      self._img = draw_axes(self._img,feature_points,imgpts)
-
-      if self._debug:
+      if self._debug > 1:
         print text_colors.OKGREEN + "Success." + text_colors.ENDCOLOR
 
     else:
-      self._rvecs = None
+      self._rvecs = None                           # <<<<
       self._tvecs = None
       position = (None, None, None)
-      orientation = (None, None, None)
-      yawpitchroll = (None, None, None)
+      # orientation = (None, None, None)
+      quat = (None, None, None, None)
 
     # Return the obtained pose, rvecs, and tvecs
-    return position, yawpitchroll, orientation
+    return position, quat #, orientation
+
+  def _rel_pose_from_rodrigues(self):
+      R,_ = cv2.Rodrigues(self._rvecs)
+      q = self.matrix_to_quat(R)
+      return np.array(self._tvecs), q
+
+  def matrix_to_quat(self, R):
+      # Convert SO(3) rotation matrix R to quaternion q = [qw qx qy qz]
+      R11 = R[0,0]
+      R12 = R[0,1]
+      R13 = R[0,2]
+      R21 = R[1,0]
+      R22 = R[1,1]
+      R23 = R[1,2]
+      R31 = R[2,0]
+      R32 = R[2,1]
+      R33 = R[2,2]
+      tr = R11 + R22 + R33
+
+      if tr > 0:
+          S = math.sqrt(tr + 1.0) * 2
+          qw = 0.25 * S
+          qx = (R32 - R23) / S
+          qy = (R13 - R31) / S
+          qz = (R21 - R12) / S
+      elif (R11 > R22) and (R11 > R33):
+          S = math.sqrt(1.0 + R11 - R22 - R33) * 2;
+          qw = (R32 - R23) / S
+          qx = 0.25 * S
+          qy = (R12 + R21) / S
+          qz = (R13 + R31) / S
+      elif R22 > R33:
+          S = math.sqrt(1.0 + R22 - R11 - R33) * 2
+          qw = (R13 - R31) / S
+          qx = (R12 + R21) / S
+          qy = 0.25 * S
+          qz = (R23 + R32) / S
+      else:
+          S = math.sqrt(1.0 + R33 - R11 - R22) * 2
+          qw = (R21 - R12) / S
+          qx = (R13 + R31) / S
+          qy = (R23 + R32) / S
+          qz = 0.25 * S
+
+      return (qx, qy, qz, qw)
 
   def _orientation_decomposition(self,R):
     '''
@@ -763,3 +874,36 @@ class PnPSolver(object):
       roll = -(x + 180)
 
     return [yaw,pitch,roll]
+
+class VisionPose(object):
+  def __init__(self, mtx, dist, objp, debug, bin_thresh, rotate, logdir):
+    self.mtx = mtx
+    self.dist = dist
+    self.logdir = logdir
+    self.debug = debug
+    axlen = abs(objp[4]) # np.linalg.norm(objp[0]-objp[1])
+    self.axes = np.float32([[0,0,0], [axlen,0,0], [0,axlen,0], [0,0,axlen]]).reshape(-1,3)
+    self.cfinder = CentroidFinder(debug, bin_thresh, logdir)
+    self.nfilter = NoiseFilter(debug, rotate, logdir)
+    self.psolver = PnPSolver(mtx, dist, debug, rotate, objp, logdir)
+  def imgToPose(self, img, id, rvecs=None, tvecs=None):
+    centroids = self.cfinder.get_centroids(img, id)
+    centroids = self.nfilter.filter_noise(img, centroids, id)
+    position = None
+    quat = None
+    if len(centroids) == 8:
+      position, quat = self.psolver.solve_pnp(img, centroids, id, rvecs, tvecs)
+    else:
+      self.psolver._rvecs = None
+      self.psolver._tvecs = None
+      if self.debug > 1:
+        print text_colors.WARNING + 'Warning: Incongruent number of centroids of id %d: %d' % (id, len(centroids)) + text_colors.ENDCOLOR
+    if self.debug > 0:
+      if not self.psolver._rvecs is None:
+        # Draw axes on image
+        imgpts,_ = cv2.projectPoints(self.axes,self.psolver._rvecs,self.psolver._tvecs,self.mtx,self.dist)
+        img = draw_axes(img, imgpts)
+        if self.debug > 2:
+          cv2.imwrite(self.logdir + '/' + str(id) + '_[pnp](axes).png', img)
+      show_image("Feature Pose Extraction", img, duration=1)
+    return position, quat

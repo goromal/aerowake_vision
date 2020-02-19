@@ -175,13 +175,13 @@ public:
     void proj(const Vec3& pt, Vec2& pix) const // TRUNCATING FOR PURPOSES OF THE AEROWAKE SIM
     {
         const double pt_z = pt(2);
-//        Vec2 pi_d;
+        Vec2 pi_d;
         if (pt_z > 0)
         {
             Vec2 pi_u = (pt.segment<2>(0) / pt_z);
-    //        Distort(pi_u, pi_d);
-    //        intrinsic2pix(pi_d, pix);
-            intrinsic2pix(pi_u, pix);
+            Distort(pi_u, pi_d);
+            intrinsic2pix(pi_d, pix);
+//            intrinsic2pix(pi_u, pix);
         }
         else
             pix = Vec2(-9e10,-9e10);
