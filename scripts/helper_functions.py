@@ -109,14 +109,14 @@ class CentroidFinder(object):
     self._img = np.array(img)
 
     # Find centroids and reshape for ROS publishing
-    centroids = self._obtain_initial_centroids()
+    centroids, valid, num_contours = self._obtain_initial_centroids()
 
     for c in centroids:
       center = (int(c[0]),int(c[1]))
       cv2.circle(self._img, center, 3, 255, 3)
 
     # Return centroids and image with centroids highlighted
-    return centroids #, self._img
+    return centroids, valid, num_contours #, self._img
 
   def _obtain_initial_centroids(self):
     '''
@@ -146,35 +146,50 @@ class CentroidFinder(object):
     # Find contours
     # contours, _ = cv2.findContours(self._img,cv2.RETR_TREE,cv2.CHAIN_APPROX_NONE)
     _, contours, _ = cv2.findContours(self._img,cv2.RETR_TREE,cv2.CHAIN_APPROX_NONE)
+    if len(contours) <= 12:
 
     # if self._debug > 2:
     #   img_temp = np.array(self._img)
     #   cv2.drawContours(img_temp, contours, -1, (255,255,255), 3)
     #   cv2.imwrite(self._logdir + '/' + str(self._id) + '_[centroid](contours).png', img_temp)
 
-    # Extract centroids
-    centroids = []
-    all_centers = set([])
-    max_y,max_x = self._img.shape[:2]
-    edge_of_img_border = 5
-    near_buff = 5
-    for c in contours:
-      # Obtain the coordinates of the center of the contour
-      (x,y),_ = cv2.minEnclosingCircle(c)
-      center = (int(x),int(y))
-      # If we have already detected a point at (or very near) a given coordinate, do not add it again.
-      if center not in all_centers:
-        all_centers.add(center)
-        # Add nearby buffer so that we do not get redundant centroids
-        for i in range(-near_buff,near_buff + 1):
-          for j in range(-near_buff,near_buff + 1):
-            nearby_center = (center[0] + i,center[1] + j)
-            all_centers.add(nearby_center)
-        # Add the centroid to the collective list. Region of interest is added here since a truncated image will be offset by the amount of truncation.
-        centroids.append((x, y))
+      # Extract centroids
+      centroids = []
+      eccentricities = []
+      all_centers = set([])
+      max_y,max_x = self._img.shape[:2]
+      edge_of_img_border = 5
+      near_buff = 5
+      e_thresh = 10                          # <<<<< <()> <<<<<
+      valid = True
+      for c in contours:
+        # Obtain the coordinates of the center of the contour
+        # (x,y),_ = cv2.minEnclosingCircle(c)
+        if len(c) >= 5:
+          (x,y), axes, _ = cv2.fitEllipse(c)
+          if axes[0] > 0:
+            eccentricity = axes[1]/axes[0]
+          else:
+            eccentricity = 9999
+          center = (int(x),int(y))
+          # If we have already detected a point at (or very near) a given coordinate, do not add it again.
+          if center not in all_centers:
+            all_centers.add(center)
+            # Add nearby buffer so that we do not get redundant centroids
+            for i in range(-near_buff,near_buff + 1):
+              for j in range(-near_buff,near_buff + 1):
+                nearby_center = (center[0] + i,center[1] + j)
+                all_centers.add(nearby_center)
+            # Add the centroid to the collective list. Region of interest is added here since a truncated image will be offset by the amount of truncation.
+            centroids.append((x, y))
+            eccentricities.append(eccentricity)
 
-    # Return the centroids found
-    return tuple(centroids)
+      # Return the centroids found
+      if len(eccentricities) > 0 and min(eccentricities) > e_thresh and max(eccentricities) > e_thresh:
+        valid = False
+      return tuple(centroids), valid, len(contours)
+    else:
+      return tuple([]), False, len(contours)
 
 class NoiseFilter(object):
   def __init__(self, flag_debug, rotate, logdir):
@@ -221,9 +236,9 @@ class NoiseFilter(object):
           cv2.circle(img_temp, center, 3, 255, 3)
         cv2.imwrite(self._logdir + '/' + str(self._id) + '_[filter](1 filter).png', img_temp)
 
-      # if self._debug > 1: ++++
-      #   print text_colors.OKBLUE + "Note: First filter applied." + text_colors.ENDCOLOR ++++
-      # centroids = self._first_round_centroid_filter(centroids) ++++
+      # if self._debug > 1:
+      #   print text_colors.OKBLUE + "Note: First filter applied." + text_colors.ENDCOLOR
+      # centroids = self._first_round_centroid_filter(centroids)
 
       # TODO: rewrite 2nd round filter to be camera orientation independent (i.e. if camera is mounted at 90 degrees, make 2nd round filter work still)
       # if len(centroids) > 8:
@@ -542,10 +557,12 @@ class PnPSolver(object):
     '''
     Corresponds each image point in centroids to a known real-world coordinate, then solves the Perspective-n-Point problem for that assignment.
     '''
+    incremental = True
 
     if self._rvecs is None and not rvecs is None:
       self._rvecs = rvecs
       self._tvecs = tvecs
+      incremental = False
       print text_colors.WARNING + 'Warning: Using manufactured initial guess for rvec, tvec' + text_colors.ENDCOLOR
 
     # Set image
@@ -564,7 +581,7 @@ class PnPSolver(object):
     # position, yawpitchroll, orientation = self._pose_extraction(assigned_rows)
     position, quat = self._pose_extraction(assigned_rows)
 
-    return position, quat #, self._img
+    return position, quat, incremental #, self._img
 
   def _assign_points(self, centroids):
     '''
@@ -730,7 +747,9 @@ class PnPSolver(object):
     if self._rvecs is None:
       use_prev_solution = False
     # flag_success,rvecs,tvecs = cv2.solvePnP(objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.CV_ITERATIVE)
+    # print 'ABOUT TO SOLVE'
     flag_success,rvecs,tvecs = cv2.solvePnP(self._objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.SOLVEPNP_ITERATIVE)
+    # print 'SOLVED'
 
     if flag_success:
       self._rvecs = rvecs
@@ -887,13 +906,23 @@ class VisionPose(object):
     self.nfilter = NoiseFilter(debug, rotate, logdir)
     self.psolver = PnPSolver(mtx, dist, debug, rotate, objp, logdir)
   def imgToPose(self, img, id, rvecs=None, tvecs=None):
-    centroids = self.cfinder.get_centroids(img, id)
-    centroids = self.nfilter.filter_noise(img, centroids, id)
+    # print 'getting centroids for', id
+    centroids, valid, num_contours = self.cfinder.get_centroids(img, id)
+    # print 'filtering for', id, 'with %d centroids' % len(centroids), 'and valid:', valid
+    if len(centroids) <= 12:
+      centroids = self.nfilter.filter_noise(img, centroids, id)
+
     position = None
     quat = None
+    sol_status = False
+    incremental = None
     if len(centroids) == 8:
-      position, quat = self.psolver.solve_pnp(img, centroids, id, rvecs, tvecs)
+      # print 'solving pnp for', id
+      position, quat, incremental = self.psolver.solve_pnp(img, centroids, id, rvecs, tvecs)
+      # print 'done'
+      sol_status = True
     else:
+      # print 'not solving pnp for', id
       self.psolver._rvecs = None
       self.psolver._tvecs = None
       if self.debug > 1:
@@ -906,4 +935,4 @@ class VisionPose(object):
         if self.debug > 2:
           cv2.imwrite(self.logdir + '/' + str(id) + '_[pnp](axes).png', img)
       show_image("Feature Pose Extraction", img, duration=1)
-    return position, quat
+    return position, quat, len(centroids), sol_status, incremental, valid, num_contours

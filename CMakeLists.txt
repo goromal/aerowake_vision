@@ -19,6 +19,19 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   tf2
   tf2_ros
+  message_generation
+)
+
+add_message_files(
+  DIRECTORY msg
+  FILES
+  VisionPose.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  geometry_msgs
+  std_msgs
 )
 
 ## System dependencies are found with CMake's conventions

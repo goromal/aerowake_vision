@@ -3,8 +3,8 @@
   <!-- ============= OBC PARAMETERS FOR MILESTONE 4 ============== -->
 
   <arg name="record"        default="false"/>
-  <arg name="mav_name"      default="aerowake_1"/>
-  <arg name="bagfile"       default="$(find aerowake_sim)/bags/vision_bags/HW_RAW1.bag"/>
+  <arg name="mav_name"      default="aerowake_uav"/>
+  <arg name="bagfile"       default="$(find aerowake_sim)/bags/vision_bags/vicon_camera_whydropout_FILTERED.bag"/>
   <arg name="vis_param"     default="mit-green-small"/>
   <arg name="camcal_param"  default="calib-small-1"/>
   <arg name="frame_param"   default="mit-uav-frame"/>
@@ -27,16 +27,19 @@
   <arg name="ekf_paramfile"     default="$(find aerowake_params)/params/ekf/$(arg ekf_param).yaml"/>
 
   <!-- VICON sensor -->
-  <node name="vicon_sensor" pkg="aerowake_utils" type="vicon_sensor.py" output="screen">
+  <!-- <node name="vicon_sensor" pkg="aerowake_utils" type="vicon_sensor.py" output="screen">
     <remap from="vicon" to="$(arg mav_name)/vicon/filtered"/>
-  </node>
+  </node> -->
+  <!-- <node name="vicon_sensor" pkg="aerowake_utils" type="vicon_sensor_new.py" output="screen">
+    <remap from="vicon" to="$(arg mav_name)/world"/>
+  </node> -->
 
   <!-- (Relative) Estimator -->
-  <node name="estimator" pkg="roscopter" type="ekf_node" output="screen">
+  <!-- <node name="estimator" pkg="roscopter" type="ekf_node" output="screen">
     <rosparam command="load" file="$(arg ekf_paramfile)"/>
     <remap from="imu" to="imu/data"/>
     <remap from="odom" to="rel_odometry"/>
-  </node>
+  </node> -->
 
   <!-- Vision Bridge -->
   <node name="vision_bridge" pkg="aerowake_vision" type="vision_system_bridge" output="screen">
@@ -55,7 +58,7 @@
   <!-- ROSbag recorder -->
   <group if="$(arg record)">
     <node name="recorder" pkg="rosbag" type="record" output="screen"
-          args="-o $(find aerowake_sim)/bags/vision_bags/vis_hw.bag /vision_pose /rel_odometry"/>
+          args="-o $(find aerowake_sim)/bags/vision_bags/vicon_camera_hw.bag /vision_pose /vision_pose_orig /rel_odometry"/>
   </group>
 
 </launch>
