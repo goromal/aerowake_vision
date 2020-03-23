@@ -180,8 +180,8 @@ public:
         {
             Vec2 pi_u = (pt.segment<2>(0) / pt_z);
             Distort(pi_u, pi_d);
-            intrinsic2pix(pi_d, pix);
-//            intrinsic2pix(pi_u, pix);
+//            intrinsic2pix(pi_d, pix);
+            intrinsic2pix(pi_u, pix);
         }
         else
             pix = Vec2(-9e10,-9e10);

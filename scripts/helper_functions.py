@@ -746,9 +746,15 @@ class PnPSolver(object):
     use_prev_solution = False
     if self._rvecs is None:
       use_prev_solution = False
+    tvecs_prev = self._tvecs
+    rvecs_prev = self._rvecs
     # flag_success,rvecs,tvecs = cv2.solvePnP(objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.CV_ITERATIVE)
     # print 'ABOUT TO SOLVE'
     flag_success,rvecs,tvecs = cv2.solvePnP(self._objp,feature_points,self._mtx,self._dist,self._rvecs,self._tvecs,use_prev_solution,cv2.SOLVEPNP_ITERATIVE)
+
+    if not tvecs_prev is None: # LAST LINE OF DEFENSE
+      if np.linalg.norm(tvecs_prev - tvecs) > 2.0 or np.linalg.norm(rvecs_prev - rvecs) > 2.0:
+          flag_success = False
     # print 'SOLVED'
 
     if flag_success:

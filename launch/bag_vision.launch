@@ -8,7 +8,7 @@
   <arg name="vis_param"     default="mit-green-small"/>
   <arg name="camcal_param"  default="calib-small-1"/>
   <arg name="frame_param"   default="mit-uav-frame"/>
-  <arg name="ekf_param"     default="mit-uav-mocap"/>
+  <!-- <arg name="ekf_param"     default="mit-uav-mocap"/> -->
 
   <!-- =========================================================== -->
 
@@ -24,7 +24,7 @@
   <arg name="vis_paramfile"     default="$(find aerowake_params)/params/vision/$(arg vis_param).yaml"/>
   <arg name="camcal_paramfile"  default="$(find aerowake_params)/params/camera/$(arg camcal_param).yaml"/>
   <arg name="frame_paramfile"   default="$(find aerowake_params)/params/frame/$(arg frame_param).yaml"/>
-  <arg name="ekf_paramfile"     default="$(find aerowake_params)/params/ekf/$(arg ekf_param).yaml"/>
+  <!-- <arg name="ekf_paramfile"     default="$(find aerowake_params)/params/ekf/$(arg ekf_param).yaml"/> -->
 
   <!-- VICON sensor -->
   <!-- <node name="vicon_sensor" pkg="aerowake_utils" type="vicon_sensor.py" output="screen">
@@ -42,9 +42,9 @@
   </node> -->
 
   <!-- Vision Bridge -->
-  <node name="vision_bridge" pkg="aerowake_vision" type="vision_system_bridge" output="screen">
+  <!-- <node name="vision_bridge" pkg="aerowake_vision" type="vision_system_bridge" output="screen">
     <rosparam command="load" file="$(arg frame_paramfile)"/>
-  </node>
+  </node> -->
 
   <!-- Vision System -->
   <node name="vision_system" pkg="aerowake_vision" type="vision_system.py" output="screen">

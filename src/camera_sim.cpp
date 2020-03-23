@@ -30,19 +30,18 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     Xformd X_ship_beacon = Xformd(Vector3d(vec_X_ship_beacon[0], vec_X_ship_beacon[1], vec_X_ship_beacon[2]),
                                   Quatd::from_euler(vec_X_ship_beacon[3], vec_X_ship_beacon[4], vec_X_ship_beacon[5]));
 
-    std::vector<double> points_BOAT = std::vector<double>(3 * NUM_BEACONS);
-    ROS_ASSERT(nh_private_.getParam("beacon_positions", points_BOAT));
+    std::vector<double> points_BEACON_coeff = std::vector<double>(3 * NUM_BEACONS);
+    ROS_ASSERT(nh_private_.getParam("beacon_positions", points_BEACON_coeff));
     for (int i = 0; i < NUM_BEACONS; i++)
     {
-        double point_BOAT_x = points_BOAT[TO_ULONG(3 * i + 0)];
-        double point_BOAT_y = points_BOAT[TO_ULONG(3 * i + 1)];
-        double point_BOAT_Z = points_BOAT[TO_ULONG(3 * i + 2)];
-        Vector3d point_BOAT = X_ship_beacon.transforma(Vector3d(point_BOAT_x, point_BOAT_y, point_BOAT_Z));
-        points_BOAT_.push_back(point_BOAT);
+        Vector3d point_SHIP = X_ship_beacon.transforma(Vector3d(points_BEACON_coeff[TO_ULONG(3 * i + 0)],
+                                                                points_BEACON_coeff[TO_ULONG(3 * i + 1)],
+                                                                points_BEACON_coeff[TO_ULONG(3 * i + 2)]));
+        points_SHIP_.push_back(cv::Point3d(point_SHIP.x(), point_SHIP.y(), point_SHIP.z()));
         geometry_msgs::Point p;
-        p.x = point_BOAT.x();
-        p.y = point_BOAT.y();
-        p.z = point_BOAT.z();
+        p.x = point_SHIP.x();
+        p.y = point_SHIP.y();
+        p.z = point_SHIP.z();
         marker_.points.push_back(p);
     }
 
@@ -54,7 +53,7 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     double phi = T_UAV_CAM_coeffs[3];
     double tht = T_UAV_CAM_coeffs[4];
     double psi = T_UAV_CAM_coeffs[5];
-    T_UAV_CAM_ = Xformd(Vector3d(x, y, z), Quatd::from_euler(phi, tht, psi));
+    X_UAV_CAM_ = Xformd(Vector3d(x, y, z), Quatd::from_euler(phi, tht, psi));
 
     ROS_ASSERT(nh_private_.getParam("image_width", img_w_));
     ROS_ASSERT(nh_private_.getParam("image_height", img_h_));
@@ -62,8 +61,16 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     std::vector<double> opencv_camera_matrix_coeff = std::vector<double>(9);
     ROS_ASSERT(nh_private_.getParam("camera_matrix/data", opencv_camera_matrix_coeff));
     // https://docs.opencv.org/2.4/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html
-    Vector2d cam_f(opencv_camera_matrix_coeff[0], opencv_camera_matrix_coeff[4]),
-             cam_c(opencv_camera_matrix_coeff[2], opencv_camera_matrix_coeff[5]);
+    K_ = cv::Mat(3, 3, cv::DataType<double>::type);
+    K_.at<double>(0,0) = opencv_camera_matrix_coeff[0];
+    K_.at<double>(0,1) = opencv_camera_matrix_coeff[1];
+    K_.at<double>(0,2) = opencv_camera_matrix_coeff[2];
+    K_.at<double>(1,0) = opencv_camera_matrix_coeff[3];
+    K_.at<double>(1,1) = opencv_camera_matrix_coeff[4];
+    K_.at<double>(1,2) = opencv_camera_matrix_coeff[5];
+    K_.at<double>(2,0) = opencv_camera_matrix_coeff[6];
+    K_.at<double>(2,1) = opencv_camera_matrix_coeff[7];
+    K_.at<double>(2,2) = opencv_camera_matrix_coeff[8];
 
     ROS_ASSERT(nh_private_.getParam("camera/pointgrey_camera/frame_rate", cameraRate_));
     ROS_ASSERT(cameraRate_ >= 1.0);
@@ -79,6 +86,12 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     std::vector<double> opencv_dist_matrix_coeff = std::vector<double>(5);
     ROS_ASSERT(nh_private_.getParam("distortion_coefficients/data", opencv_dist_matrix_coeff));
     ROS_ASSERT(nh_private_.getParam("distortion_coefficients/data", caminfo_.D));
+    D_ = cv::Mat(5, 1, cv::DataType<double>::type);
+    D_.at<double>(0) = opencv_dist_matrix_coeff[0];
+    D_.at<double>(1) = opencv_dist_matrix_coeff[1];
+    D_.at<double>(2) = opencv_dist_matrix_coeff[2];
+    D_.at<double>(3) = opencv_dist_matrix_coeff[3];
+    D_.at<double>(4) = opencv_dist_matrix_coeff[4];
 
     for (unsigned int i = 0; i < 9; i++)
         caminfo_.K[i] = opencv_camera_matrix_coeff[i];
@@ -86,12 +99,6 @@ CameraSim::CameraSim() : camera_counter_(0), nh_(), nh_private_("~"), tfBuffer_(
     ROS_ASSERT(nh_private_.getParam("projection_matrix/data", opencv_proj_matrix_coeff));
     for (unsigned int i = 0; i < 12; i++)
         caminfo_.P[i] = opencv_proj_matrix_coeff[i];
-
-    // Full camera model from projection matrix
-    Vector2d             f(opencv_proj_matrix_coeff[0], opencv_proj_matrix_coeff[5]);
-    Vector2d             c(opencv_proj_matrix_coeff[2], opencv_proj_matrix_coeff[6]);
-    Matrix<double, 5, 1> d(opencv_dist_matrix_coeff.data());
-    camera_ = Camera(f, c, d, img_size);
 
     // Update timer
     timer_ = nh_.createTimer(ros::Duration(ros::Rate(updateRate_)), &CameraSim::onUpdate, this);
@@ -115,14 +122,19 @@ void CameraSim::onUpdate(const ros::TimerEvent &)
 
 void CameraSim::takePicture()
 {
-    // Get transform from BOAT frame to UAV frame
+    // Get (robotics convention) passive transform from SHP frame to CAM frame
+    Xformd X_SHP_CAM;
     try
     {
-        tf_BOAT_UAV_ = tfBuffer_.lookupTransform("boatNED", "UAV", ros::Time(0));
-        q_BOAT_UAV_ = Quatd(Vector4d(tf_BOAT_UAV_.transform.rotation.w,
-                                     tf_BOAT_UAV_.transform.rotation.x,
-                                     tf_BOAT_UAV_.transform.rotation.y,
-                                     tf_BOAT_UAV_.transform.rotation.z));
+        tf_UAV_SHIP_ = tfBuffer_.lookupTransform("boatNED", "UAV", ros::Time(0));
+        Xformd X_SHIP_UAV(Vector3d(tf_UAV_SHIP_.transform.translation.x,
+                                   tf_UAV_SHIP_.transform.translation.y,
+                                   tf_UAV_SHIP_.transform.translation.z),
+                    Quatd(Vector4d(tf_UAV_SHIP_.transform.rotation.w,
+                                   tf_UAV_SHIP_.transform.rotation.x,
+                                   tf_UAV_SHIP_.transform.rotation.y,
+                                   tf_UAV_SHIP_.transform.rotation.z)));
+        X_SHP_CAM = X_SHIP_UAV * X_UAV_CAM_;
     }
     catch (tf2::TransformException &ex)
     {
@@ -131,42 +143,34 @@ void CameraSim::takePicture()
         return;
     }
 
-    // Get transform from BOAT frame to CAM frame
-//    std::cout << tf_BOAT_UAV_ << std::endl; // GOOD, ACTIVE FROM BOAT TO UAV
-    Xformd T_BOAT_UAV = Xformd(Vector3d(tf_BOAT_UAV_.transform.translation.x,
-                                        tf_BOAT_UAV_.transform.translation.y,
-                                        tf_BOAT_UAV_.transform.translation.z),
-                               q_BOAT_UAV_);
-//    std::cout << T_BOAT_UAV << std::endl; // GOOD, SAME THING
-    Xformd T_BOAT_CAM = T_BOAT_UAV * T_UAV_CAM_;
-//    std::cout << T_BOAT_CAM << std::endl;
+    // Extract rvec and tvec from X_SHP_CAM
+    cv::Mat R;
+    cv::eigen2cv(X_SHP_CAM.q().R(), R);
+    cv::Vec3d rvec_SHP_CAM;
+    cv::Rodrigues(R, rvec_SHP_CAM);
+    Vector3d tvec_eig = X_SHP_CAM.inverse().t();
+    cv::Vec3d tvec_SHP_CAM;
+    cv::eigen2cv(tvec_eig, tvec_SHP_CAM);
 
     // Draw blank black image (https://stackoverflow.com/questions/28780947/opencv-create-new-image-using-cvmat/28782436)
     cv::Mat image(img_h_, img_w_, CV_8UC3, cv::Scalar(0, 0, 0));
     cv::Scalar white(255, 255, 255);
 
-    // Perform projection of feature points onto the camera pixel frame and draw on image
+    // Perform projection of feature points onto the camera pixel frame
+    std::vector<cv::Point2d> pixels;
+    cv::projectPoints(points_SHIP_, rvec_SHP_CAM, tvec_SHP_CAM, K_, D_, pixels);
+
+    // Add pixel measurement noise and draw on image for each feature point
     for (int i = 0; i < NUM_BEACONS; i++)
     {
-        Vector3d point_CAM = T_BOAT_CAM.transformp(points_BOAT_[TO_ULONG(i)]);
-//        std::cout << point_CAM.transpose() << std::endl;
-        Vector2d pixel;
-        camera_.proj(point_CAM, pixel);
-        int pixel_x = static_cast<int>(pixel(0, 0));
-        int pixel_y = static_cast<int>(pixel(1, 0));
-
-        // add pixel noise
-        pixel_x += static_cast<int>(pix_stdev_ * gaussian_dist_(random_generator_));
-        pixel_y += static_cast<int>(pix_stdev_ * gaussian_dist_(random_generator_));
-
+        pixels[TO_ULONG(i)] += cv::Point2d(static_cast<int>(pix_stdev_ * gaussian_dist_(random_generator_)),
+                                           static_cast<int>(pix_stdev_ * gaussian_dist_(random_generator_)));
         // add to image (https://stackoverflow.com/questions/31658132/c-opencv-not-drawing-circles-on-mat-image)
         //              (https://stackoverflow.com/questions/18886083/how-fill-circles-on-opencv-c)
-        if (pixel_x > PIXEL_RAD + 1 && pixel_x < img_w_ - PIXEL_RAD - 1 &&
-            pixel_y > PIXEL_RAD + 1 && pixel_y < img_h_ - PIXEL_RAD - 1)
+        if (pixels[TO_ULONG(i)].x > PIXEL_RAD + 1 && pixels[TO_ULONG(i)].x < img_w_ - PIXEL_RAD - 1 &&
+            pixels[TO_ULONG(i)].y > PIXEL_RAD + 1 && pixels[TO_ULONG(i)].y < img_h_ - PIXEL_RAD - 1)
         {
-            cv::Point pixel_point(pixel_x, pixel_y);
-            cv::circle(image, pixel_point, PIXEL_RAD, white, CV_FILLED);
-//            std::cout << "DREW AT (" << pixel_x << ", " << pixel_y << ")" << std::endl;
+            cv::circle(image, pixels[TO_ULONG(i)], PIXEL_RAD, white, CV_FILLED);
         }
     }
 

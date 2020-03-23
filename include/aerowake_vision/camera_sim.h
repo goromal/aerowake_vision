@@ -2,7 +2,7 @@
 
 #include <ros/ros.h>
 #include <random>
-#include "camera_model.h"
+//#include "camera_model.h"
 #include "geometry-utils-lib/xform.h"
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -12,6 +12,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/eigen.hpp>
 
 #define NUM_BEACONS     8
 #define VIS_MULTIPLIER 10
@@ -37,14 +38,14 @@ private:
     ros::Publisher caminfo_pub_;
     sensor_msgs::CameraInfo caminfo_;
 
-    std::vector<Vector3d> points_BOAT_;
-    geometry_msgs::TransformStamped tf_BOAT_UAV_;
-    Quatd q_BOAT_UAV_;
-    Xformd T_UAV_CAM_;
+    std::vector<cv::Point3d> points_SHIP_;
+    geometry_msgs::TransformStamped tf_UAV_SHIP_;
+    Xformd X_UAV_CAM_;
 
     int img_w_;
     int img_h_;
-    Camera camera_;
+    cv::Mat K_;
+    cv::Mat D_;
 
     double updateRate_;
     double cameraRate_;
